@@ -110,6 +110,12 @@ opt<int> RelocatableShaderElfLimit("relocatable-shader-elf-limit",
                                             "relocatable shader ELF.  -1 means unlimited."),
                                    init(-1));
 
+// -build-shader-cache: Populates the cache by building variants of the given shaders.
+opt<bool>
+    BuildShaderCache("build-shader-cache",
+                     cl::desc("[WIP] Populates the cache by building variants of the given shaders."
+                              "  This is still a work in progress and there are no guarantees on how well it works."));
+
 // -shader-cache-mode: shader cache mode:
 // 0 - Disable
 // 1 - Runtime cache
@@ -715,6 +721,7 @@ Result Compiler::BuildShaderModule(const ShaderModuleBuildInfo *shaderInfo, Shad
 // @param [out] pipelineElf : Output Elf package
 Result Compiler::buildPipelineWithRelocatableElf(Context *context, ArrayRef<const PipelineShaderInfo *> shaderInfo,
                                                  unsigned forceLoopUnrollCount, ElfPackage *pipelineElf) {
+  LLPC_OUTS("Building pipeline with relocatable shader elf.\n")
   Result result = Result::Success;
 
   // Merge the user data once for all stages.
@@ -756,8 +763,10 @@ Result Compiler::buildPipelineWithRelocatableElf(Context *context, ArrayRef<cons
     if (cacheEntryState == ShaderEntryState::Ready) {
       auto data = reinterpret_cast<const char *>(elfBin.pCode);
       elf[stage].assign(data, data + elfBin.codeSize);
+      LLPC_OUTS("Cache hit for shader stage " << stage << "\n");
       continue;
     }
+    LLPC_OUTS("Cache miss for shader stage " << stage << "\n");
 
     // There was a cache miss, so we need to build the relocatable shader for
     // this stage.
@@ -773,12 +782,16 @@ Result Compiler::buildPipelineWithRelocatableElf(Context *context, ArrayRef<cons
       elfBin.pCode = elf[stage].data();
     }
     updateShaderCache((result == Result::Success), &elfBin, shaderCache, hEntry);
+    LLPC_OUTS("Updating the cache for shader stage " << stage << "\n");
   }
   context->getPipelineContext()->setShaderStageMask(originalShaderStageMask);
   context->getLgcContext()->setBuildRelocatableElf(false);
 
-  // Link the relocatable shaders into a single pipeline elf file.
-  linkRelocatableShaderElf(elf, pipelineElf, context);
+  if (!cl::BuildShaderCache) {
+    // Link the relocatable shaders into a single pipeline elf file.
+    // Not needed if we are just interested in building the cache.
+    linkRelocatableShaderElf(elf, pipelineElf, context);
+  }
 
   return result;
 }
@@ -798,7 +811,9 @@ bool Compiler::canUseRelocatableGraphicsShaderElf(const ArrayRef<const PipelineS
         useRelocatableShaderElf = false;
     } else if (!shaderInfo[stage] || !shaderInfo[stage]->pModuleData) {
       // TODO: Generate pass-through shaders when the fragment or vertex shaders are missing.
-      useRelocatableShaderElf = false;
+      if (!cl::BuildShaderCache) {
+        useRelocatableShaderElf = false;
+      }
     }
   }
 
@@ -1453,14 +1468,21 @@ Result Compiler::BuildComputePipeline(const ComputePipelineBuildInfo *pipelineIn
 // @param options : An array of compilation-option strings
 MetroHash::Hash Compiler::generateHashForCompileOptions(unsigned optionCount, const char *const *options) {
   // Options which needn't affect compilation results
-  static StringRef IgnoredOptions[] = {
-      cl::PipelineDumpDir.ArgStr, cl::EnablePipelineDump.ArgStr, cl::ShaderCacheFileDir.ArgStr,
-      cl::ShaderCacheMode.ArgStr, cl::EnableOuts.ArgStr,         cl::EnableErrs.ArgStr,
-      cl::LogFileDbgs.ArgStr,     cl::LogFileOuts.ArgStr,        cl::ExecutableName.ArgStr};
+  static StringRef IgnoredOptions[] = {cl::PipelineDumpDir.ArgStr,    cl::EnablePipelineDump.ArgStr,
+                                       cl::ShaderCacheFileDir.ArgStr, cl::ShaderCacheMode.ArgStr,
+                                       cl::EnableOuts.ArgStr,         cl::EnableErrs.ArgStr,
+                                       cl::LogFileDbgs.ArgStr,        cl::LogFileOuts.ArgStr,
+                                       cl::ExecutableName.ArgStr,     "o",
+                                       "build-shader-cache"};
 
   std::set<StringRef> effectingOptions;
   // Build effecting options
   for (unsigned i = 1; i < optionCount; ++i) {
+    if (options[i][0] != '-') {
+      // Ignore input file names.
+      continue;
+    }
+
     StringRef option = options[i] + 1; // Skip '-' in options
     bool ignore = false;
     for (unsigned j = 0; j < sizeof(IgnoredOptions) / sizeof(IgnoredOptions[0]); ++j) {

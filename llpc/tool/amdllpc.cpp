@@ -244,6 +244,7 @@ extern opt<bool> EnablePipelineDump;
 extern opt<std::string> PipelineDumpDir;
 extern opt<bool> DisableNullFragShader;
 extern opt<bool> EnableTimerProfile;
+extern opt<bool> BuildShaderCache;
 
 // -filter-pipeline-dump-by-type: filter which kinds of pipeline should be disabled.
 static opt<unsigned> FilterPipelineDumpByType("filter-pipeline-dump-by-type",
@@ -1529,6 +1530,126 @@ void findAllMatchFiles(const std::string &inFile,           // [in] Input file n
   return;
 }
 #endif
+
+// =====================================================================================================================
+// Builds necessary variants of the shader inFile.  It must be either spir-v assembly or spir-v binary.
+static Result BuildShaderVariants(ICompiler *pCompiler,      // [in] LLPC context
+                                  const std::string &inFile) // Input filename
+{
+  Result result = Result::Success;
+  CompileInfo compileInfo = {};
+  std::string fileNames;
+  compileInfo.doAutoLayout = true;
+  assert(!CheckAutoLayoutCompatible && "When processing shader variants we do not use the auto layout.");
+  compileInfo.checkAutoLayoutCompatible = false;
+
+  result = initCompileInfo(&compileInfo);
+
+  //
+  // Translate sources to SPIR-V binary
+  //
+  std::string spvBinFile;
+  assert((isSpirvTextFile(inFile) || isSpirvBinaryFile(inFile)) && "We only build shader variants for spir-v files.");
+
+  if (isSpirvTextFile(inFile)) {
+    result = assembleSpirv(inFile, spvBinFile);
+  } else {
+    spvBinFile = inFile;
+  }
+
+  BinaryData spvBin = {};
+
+  if (result == Result::Success) {
+    result = getSpirvBinaryFromFile(spvBinFile, &spvBin);
+
+    if (result == Result::Success) {
+      if (InitSpvGen() == false) {
+        LLPC_OUTS("Failed to load SPVGEN -- no SPIR-V disassembler available\n");
+      } else {
+        // Disassemble SPIR-V code
+        uint32_t textSize = spvBin.codeSize * 10 + 1024;
+        char *pSpvText = new char[textSize];
+        assert(pSpvText);
+        memset(pSpvText, 0, textSize);
+
+        LLPC_OUTS("\nSPIR-V disassembly for " << inFile << "\n");
+        spvDisassembleSpirv(spvBin.codeSize, spvBin.pCode, textSize, pSpvText);
+        LLPC_OUTS(pSpvText << "\n");
+
+        delete[] pSpvText;
+      }
+    }
+  }
+
+  if ((result == Result::Success) && Validate) {
+    char log[1024] = {};
+    if (InitSpvGen() == false) {
+      errs() << "Warning: Failed to load SPVGEN -- cannot validate SPIR-V\n";
+    } else {
+      if (spvValidateSpirv(spvBin.codeSize, spvBin.pCode, sizeof(log), log) == false) {
+        LLPC_ERRS("Fails to validate SPIR-V: \n" << log << "\n");
+        result = Result::ErrorInvalidShader;
+      }
+    }
+  }
+
+  if (result == Result::Success) {
+    // NOTE: If the entry target is not specified, we look for it in the SPIR-V binary.
+    if (EntryTarget.empty()) {
+      EntryTarget.setValue(ShaderModuleHelper::getEntryPointNameFromSpirvBinary(&spvBin));
+    }
+
+    uint32_t stageMask = ShaderModuleHelper::getStageMaskFromSpirvBinary(&spvBin, EntryTarget.c_str());
+    if (stageMask != 0) {
+      for (uint32_t stage = ShaderStageVertex; stage < ShaderStageCount; ++stage) {
+        if (stageMask & shaderStageToMask(static_cast<ShaderStage>(stage))) {
+          if (stage != ShaderStageVertex && stage != ShaderStageFragment) {
+            LLPC_OUTS(
+                "\nNot currently handling shaders that are not vertex for fragment shaders when building variants.");
+            return Result::Unsupported;
+          }
+          ::ShaderModuleData shaderModuleData = {};
+          shaderModuleData.shaderStage = static_cast<ShaderStage>(stage);
+          shaderModuleData.spirvBin = spvBin;
+          compileInfo.shaderModuleDatas.push_back(shaderModuleData);
+          compileInfo.stageMask |= shaderStageToMask(static_cast<ShaderStage>(stage));
+          break;
+        }
+      }
+    } else {
+      LLPC_ERRS(format("Fails to identify shader stages by entry-point \"%s\"\n", EntryTarget.c_str()));
+      result = Result::ErrorUnavailable;
+    }
+  }
+
+  //
+  // Build shader modules
+  //
+  if ((result == Result::Success) && (compileInfo.stageMask != 0)) {
+    result = buildShaderModules(pCompiler, &compileInfo);
+  }
+
+  //
+  // Build reloctable pipeline
+  //
+  if ((result == Result::Success) && ToLink) {
+    compileInfo.fileNames = fileNames.c_str();
+
+    for (uint32_t alphaToCoverageEnabled = 0; alphaToCoverageEnabled < 2; alphaToCoverageEnabled++) {
+      compileInfo.gfxPipelineInfo.cbState.alphaToCoverageEnable = (alphaToCoverageEnabled != 0);
+      result = buildPipeline(pCompiler, &compileInfo);
+      // TODO(s-perron): May need to find a good way to output the elf.
+    }
+  }
+
+  //
+  // Clean up
+  //
+  cleanupCompileInfo(&compileInfo);
+
+  return result;
+}
+
 // =====================================================================================================================
 // Main function of LLPC standalone tool, entry-point.
 //
@@ -1566,12 +1687,38 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
-  if (isPipelineInfoFile(InFiles[0]) || isLlvmIrFile(InFiles[0])) {
+  if (cl::BuildShaderCache) {
+    // Process each InFile individually to create to populate the cache.
+    std::vector<std::string> matchFiles;
+#ifdef WIN_OS
+    if ((InFiles.size() == 1) && (InFiles[0].find_last_of("*?") != std::string::npos)) {
+      FindAllMatchFiles(InFiles[0], &matchFiles);
+    } else
+#endif
+    {
+      for (const auto &inFile : InFiles) {
+#ifdef WIN_OS
+        if (InFiles[0].find_last_of("*?") != std::string::npos) {
+          LLPC_ERRS("\nCan't use wilecard if multiple filename is set in command\n");
+          result = Result::ErrorInvalidValue;
+          break;
+        }
+#endif
+        matchFiles.push_back(inFile);
+      }
+    }
+
+    if (result == Result::Success) {
+      for (const std::string &filename : matchFiles) {
+        result = BuildShaderVariants(compiler, filename);
+      }
+    }
+  } else if (isPipelineInfoFile(InFiles[0]) || isLlvmIrFile(InFiles[0])) {
     unsigned nextFile = 0;
 
     // The first input file is a pipeline file or LLVM IR file. Assume they all are, and compile each one
     // separately but in the same context.
-    for (unsigned i = 0; i < InFiles.size() && result == Result::Success; ++i) {
+    for (unsigned i = 0; (i < InFiles.size()) && (result == Result::Success); ++i) {
 #ifdef WIN_OS
       if (InFiles[i].find_last_of("*?") != std::string::npos) {
         std::vector<std::string> matchFiles;
