@@ -244,7 +244,7 @@ extern opt<bool> EnablePipelineDump;
 extern opt<std::string> PipelineDumpDir;
 extern opt<bool> DisableNullFragShader;
 extern opt<bool> EnableTimerProfile;
-extern opt<bool> BuildShaderCache;
+extern opt<bool> BuildRelocatableShaderCache;
 
 // -filter-pipeline-dump-by-type: filter which kinds of pipeline should be disabled.
 static opt<unsigned> FilterPipelineDumpByType("filter-pipeline-dump-by-type",
@@ -1734,7 +1734,7 @@ int main(int argc, char *argv[]) {
     return onFailure();
 
   // Build relocatable shader cache. This requires all inputs to be .pipe files.
-  if (llvm::cl::BuildShaderCache) {
+  if (llvm::cl::BuildRelocatableShaderCache) {
     auto nonPipeIt =
         llvm::find_if_not(expandedInputFiles, [](const std::string &filename) { return isPipelineInfoFile(filename); });
     if (nonPipeIt != expandedInputFiles.end()) {
