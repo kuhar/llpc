@@ -306,12 +306,12 @@ struct CompileInfo {
   GraphicsPipelineBuildOut gfxPipelineOut;           // Output of building graphics pipeline
   ComputePipelineBuildInfo compPipelineInfo;         // Info to build compute pipeline
   ComputePipelineBuildOut compPipelineOut;           // Output of building compute pipeline
-  void *pipelineBuf;              // Alllocation buffer of building pipeline
-  void *pipelineInfoFile;         // VFX-style file containing pipeline info
-  const char *fileNames;          // Names of input shader source files
-  bool doAutoLayout;              // Whether to auto layout descriptors
-  bool checkAutoLayoutCompatible; // Whether to comapre if auto layout descriptors is
-                                  // same as specified pipeline layout
+  void *pipelineBuf;                                 // Alllocation buffer of building pipeline
+  void *pipelineInfoFile;                            // VFX-style file containing pipeline info
+  const char *fileNames;                             // Names of input shader source files
+  bool doAutoLayout;                                 // Whether to auto layout descriptors
+  bool checkAutoLayoutCompatible;                    // Whether to comapre if auto layout descriptors is
+                                                     // same as specified pipeline layout
 };
 
 // =====================================================================================================================
@@ -1068,8 +1068,7 @@ static Result buildPipeline(ICompiler *compiler, CompileInfo *compileInfo) {
 
       result = decodePipelineBinary(&pipelineOut->pipelineBin, compileInfo, true);
     }
-  }
-  else {
+  } else {
     // Build compute pipeline
     assert(compileInfo->shaderModuleDatas.size() == 1);
     assert(compileInfo->shaderModuleDatas[0].shaderStage == ShaderStageCompute);
@@ -1193,7 +1192,7 @@ static Result outputElf(CompileInfo *compileInfo, const std::string &suppliedOut
 #ifdef WIN_OS
 // =====================================================================================================================
 // Callback function for SIGABRT.
-extern "C" void LlpcSignalAbortHandler(int signal) // Signal type
+extern "C" void llpcSignalAbortHandler(int signal) // Signal type
 {
   if (signal == SIGABRT) {
     redirectLogOutput(true, 0, nullptr); // Restore redirecting to show crash in console window
@@ -1205,7 +1204,7 @@ extern "C" void LlpcSignalAbortHandler(int signal) // Signal type
 #if defined(LLPC_MEM_TRACK_LEAK) && defined(_DEBUG)
 // =====================================================================================================================
 // Enable VC run-time based memory leak detection.
-static void EnableMemoryLeakDetection() {
+static void enableMemoryLeakDetection() {
   // Retrieve the state of CRT debug reporting:
   int dbgFlag = _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG);
 
@@ -1498,11 +1497,12 @@ static Result processPipeline(ICompiler *compiler, ArrayRef<std::string> inFiles
 }
 
 #ifdef WIN_OS
-// =====================================================================================================================
-// Finds all filenames which can match input file name
-void findAllMatchFiles(const std::string &inFile,           // [in] Input file name, include wildcard
-                       std::vector<std::string> *pOutFiles) // [out] Output file names which can match input file name
-{
+/// ====================================================================================================================
+/// Finds all filenames which can match input file name
+///
+/// inFile [in]     : Input file name, including a wildcard.
+/// outFiles [out] :  Output vector with matching filenames.
+static void findAllMatchFiles(const std::string &inFile, std::vector<std::string> *outFiles) {
   WIN32_FIND_DATAA data = {};
 
   // Separate folder name
@@ -1513,28 +1513,56 @@ void findAllMatchFiles(const std::string &inFile,           // [in] Input file n
   }
 
   // Search first file
-  HANDLE pSearchHandle = FindFirstFileA(inFile.c_str(), &data);
-  if (pSearchHandle == INVALID_HANDLE_VALUE) {
+  HANDLE searchHandle = FindFirstFileA(inFile.c_str(), &data);
+  if (searchHandle == INVALID_HANDLE_VALUE) {
     return;
   }
 
   // Copy first file's name
-  pOutFiles->push_back(folderName + data.cFileName);
+  outFiles->push_back(folderName + data.cFileName);
 
   // Copy other file names
-  while (FindNextFileA(pSearchHandle, &data)) {
-    pOutFiles->push_back(folderName + data.cFileName);
+  while (FindNextFileA(searchHandle, &data)) {
+    outFiles->push_back(folderName + data.cFileName);
   }
 
   FindClose(pSearchHandle);
-  return;
 }
 #endif
 
+/// ====================================================================================================================
+/// Expands all input files in a platform-specific way.
+///
+/// @param expanded [out] : Returned expanded input filenames.
+/// @returns Result::Success on success, Result::ErrorInvalidValue when expansion fails.
+static Result expandInputFilenames(std::vector<std::string> &expanded) {
+  size_t i = 0;
+  for (const auto &inFile : InFiles) {
+#ifdef WIN_OS
+    {
+      if (i > 0 && inFile.find_last_of("*?") != std::string::npos) {
+        LLPC_ERRS("\nCan't use wilecards with multiple inputs files\n");
+        return Result::ErrorInvalidValue;
+      }
+      size_t initialSize = expanded.size();
+      findAllMatchFiles(inFile, &expanded);
+      if (expanded.size() == initialSize) {
+        LLPC_ERRS("\nNo matching files found\n");
+        return Result::ErrorInvalidValue;
+      }
+    }
+#else  // WIN_OS
+    expanded.push_back(inFile);
+#endif // WIN_OS
+    ++i;
+  }
+  return Result::Success;
+}
+
 // =====================================================================================================================
 // Builds necessary variants of the shader inFile.  It must be either spir-v assembly or spir-v binary.
-static Result BuildShaderVariants(ICompiler *pCompiler,      // [in] LLPC context
-                                  const std::string &inFile) // Input filename
+Result BuildShaderVariants(ICompiler *pCompiler,      // [in] LLPC context
+                           const std::string &inFile) // Input filename
 {
   Result result = Result::Success;
   CompileInfo compileInfo = {};
@@ -1668,14 +1696,14 @@ int main(int argc, char *argv[]) {
 
   // TODO: CRT based Memory leak detection is conflict with stack trace now, we only can enable one of them.
 #if defined(LLPC_MEM_TRACK_LEAK) && defined(_DEBUG)
-  EnableMemoryLeakDetection();
+  enableMemoryLeakDetection();
 #else
   EnablePrettyStackTrace();
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram x(argc, argv);
 
 #ifdef WIN_OS
-  signal(SIGABRT, LlpcSignalAbortHandler);
+  signal(SIGABRT, llpcSignalAbortHandler);
 #endif
 #endif
 
@@ -1687,101 +1715,61 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
-  if (cl::BuildShaderCache) {
-    // Process each InFile individually to create to populate the cache.
-    std::vector<std::string> matchFiles;
-#ifdef WIN_OS
-    if ((InFiles.size() == 1) && (InFiles[0].find_last_of("*?") != std::string::npos)) {
-      FindAllMatchFiles(InFiles[0], &matchFiles);
-    } else
-#endif
-    {
-      for (const auto &inFile : InFiles) {
-#ifdef WIN_OS
-        if (InFiles[0].find_last_of("*?") != std::string::npos) {
-          LLPC_ERRS("\nCan't use wilecard if multiple filename is set in command\n");
-          result = Result::ErrorInvalidValue;
-          break;
-        }
-#endif
-        matchFiles.push_back(inFile);
-      }
+  // Simplify error handling and enable early returns. These assume that result statuses
+  // are always written to the |result| local variable.
+  auto isFailure = [result] { return result != Result::Success; };
+  auto onFailure = [compiler, result] {
+    assert(result != Result::Success);
+    compiler->Destroy();
+    LLPC_ERRS("\n=====  AMDLLPC FAILED  =====\n");
+    return 1;
+  };
+
+  if (isFailure())
+    return onFailure();
+
+  std::vector<std::string> expandedInputFiles;
+  result = expandInputFilenames(expandedInputFiles);
+  if (isFailure())
+    return onFailure();
+
+  // Build relocatable shader cache. This requires all inputs to be .pipe files.
+  if (llvm::cl::BuildShaderCache) {
+    auto nonPipeIt =
+        llvm::find_if_not(expandedInputFiles, [](const std::string &filename) { return isPipelineInfoFile(filename); });
+    if (nonPipeIt != expandedInputFiles.end()) {
+      LLPC_ERRS(format("A non-pipeline file passed cannot be used to build relocatable shader cache: %s\n",
+                       nonPipeIt->c_str()));
+      result = Result::ErrorInvalidValue;
+      return onFailure();
     }
 
-    if (result == Result::Success) {
-      for (const std::string &filename : matchFiles) {
-        result = BuildShaderVariants(compiler, filename);
-      }
+    for (const std::string &file : expandedInputFiles) {
+      result = BuildShaderVariants(compiler, file);
+      if (isFailure())
+        return onFailure();
     }
-  } else if (isPipelineInfoFile(InFiles[0]) || isLlvmIrFile(InFiles[0])) {
-    unsigned nextFile = 0;
-
+  } else if (isPipelineInfoFile(expandedInputFiles[0]) || isLlvmIrFile(expandedInputFiles[0])) {
     // The first input file is a pipeline file or LLVM IR file. Assume they all are, and compile each one
     // separately but in the same context.
-    for (unsigned i = 0; (i < InFiles.size()) && (result == Result::Success); ++i) {
-#ifdef WIN_OS
-      if (InFiles[i].find_last_of("*?") != std::string::npos) {
-        std::vector<std::string> matchFiles;
-        findAllMatchFiles(InFiles[i], &matchFiles);
-        if (matchFiles.size() == 0) {
-          LLPC_ERRS("\nFailed to read file " << InFiles[i] << "\n");
-          result = Result::ErrorInvalidValue;
-        } else {
-          for (unsigned j = 0; (j < matchFiles.size()) && (result == Result::Success); ++j) {
-            result = processPipeline(compiler, matchFiles[j], 0, &nextFile);
-          }
-        }
-      } else
-#endif
-      {
-        result = processPipeline(compiler, InFiles[i], 0, &nextFile);
-      }
+    unsigned nextFile = 0;
+
+    for (const std::string &file : expandedInputFiles) {
+      result = processPipeline(compiler, {file}, 0, &nextFile);
+      if (isFailure())
+        return onFailure();
     }
-  } else if (result == Result::Success) {
-    // Otherwise, join all input files into the same pipeline.
-#ifdef WIN_OS
-    if ((InFiles.size() == 1) && (InFiles[0].find_last_of("*?") != std::string::npos)) {
-      std::vector<std::string> matchFiles;
-      findAllMatchFiles(InFiles[0], &matchFiles);
-      if (matchFiles.size() == 0) {
-        LLPC_ERRS("\nFailed to read file " << InFiles[0] << "\n");
-        result = Result::ErrorInvalidValue;
-      } else {
-        unsigned nextFile = 0;
-        for (unsigned i = 0; (i < matchFiles.size()) && (result == Result::Success); ++i) {
-          result = processPipeline(compiler, matchFiles[i], 0, &nextFile);
-        }
-      }
-    } else
-#endif
-    {
-      SmallVector<std::string, 6> inFiles;
-      for (const auto &inFile : InFiles) {
-#ifdef WIN_OS
-        if (InFiles[0].find_last_of("*?") != std::string::npos) {
-          LLPC_ERRS("\nCan't use wilecard if multiple filename is set in command\n");
-          result = Result::ErrorInvalidValue;
-          break;
-        }
-#endif
-        inFiles.push_back(inFile);
-      }
-
-      if (result == Result::Success) {
-        unsigned nextFile = 0;
-        for (; result == Result::Success && nextFile < inFiles.size();)
-          result = processPipeline(compiler, inFiles, nextFile, &nextFile);
-      }
-    }
-  }
-
-  compiler->Destroy();
-
-  if (result == Result::Success) {
-    LLPC_OUTS("\n=====  AMDLLPC SUCCESS  =====\n");
   } else {
-    LLPC_ERRS("\n=====  AMDLLPC FAILED  =====\n");
+    // Otherwise, join all input files into the same pipeline.
+    for (unsigned nextFile = 0; nextFile < unsigned(expandedInputFiles.size());) {
+      result = processPipeline(compiler, expandedInputFiles, nextFile, &nextFile);
+      if (isFailure())
+        return onFailure();
+    }
   }
 
-  return result == Result::Success ? 0 : 1;
+  assert(!isFailure());
+  compiler->Destroy();
+  LLPC_OUTS("\n=====  AMDLLPC SUCCESS  =====\n");
+  return 0;
 }

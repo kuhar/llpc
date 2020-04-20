@@ -114,7 +114,8 @@ opt<int> RelocatableShaderElfLimit("relocatable-shader-elf-limit",
 opt<bool>
     BuildShaderCache("build-shader-cache",
                      cl::desc("[WIP] Populates the cache by building variants of the given shaders."
-                              "  This is still a work in progress and there are no guarantees on how well it works."));
+                              "  This is still a work in progress and there are no guarantees on how well it works."),
+                              init(false));
 
 // -shader-cache-mode: shader cache mode:
 // 0 - Disable
