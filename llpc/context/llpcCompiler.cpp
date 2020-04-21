@@ -111,7 +111,7 @@ opt<int> RelocatableShaderElfLimit("relocatable-shader-elf-limit",
                                    init(-1));
 
 // -build-relocatable-shader-cache: Populates the shader cache with relocatable shader variants.
-opt<bool> BuildRelocatableShaderCache("build-relocatable-shader-cache",
+opt<bool> BuildShaderCache("build-relocatable-shader-cache",
                                       cl::desc("[WiP] Populates cache with relocatable shader variants."
                                                " This is an experimental option."), init(false));
 
@@ -786,7 +786,7 @@ Result Compiler::buildPipelineWithRelocatableElf(Context *context, ArrayRef<cons
   context->getPipelineContext()->setShaderStageMask(originalShaderStageMask);
   context->getLgcContext()->setBuildRelocatableElf(false);
 
-  if (!cl::BuildRelocatableShaderCache) {
+  if (!cl::BuildShaderCache) {
     // Link the relocatable shaders into a single pipeline elf file.
     // Not needed if we are just interested in building the cache.
     linkRelocatableShaderElf(elf, pipelineElf, context);
@@ -810,7 +810,7 @@ bool Compiler::canUseRelocatableGraphicsShaderElf(const ArrayRef<const PipelineS
         useRelocatableShaderElf = false;
     } else if (!shaderInfo[stage] || !shaderInfo[stage]->pModuleData) {
       // TODO: Generate pass-through shaders when the fragment or vertex shaders are missing.
-      if (!cl::BuildRelocatableShaderCache) {
+      if (!cl::BuildShaderCache) {
         useRelocatableShaderElf = false;
       }
     }

@@ -244,7 +244,7 @@ extern opt<bool> EnablePipelineDump;
 extern opt<std::string> PipelineDumpDir;
 extern opt<bool> DisableNullFragShader;
 extern opt<bool> EnableTimerProfile;
-extern opt<bool> BuildRelocatableShaderCache;
+extern opt<bool> BuildShaderCache;
 
 // -filter-pipeline-dump-by-type: filter which kinds of pipeline should be disabled.
 static opt<unsigned> FilterPipelineDumpByType("filter-pipeline-dump-by-type",
@@ -1561,7 +1561,7 @@ static Result expandInputFilenames(std::vector<std::string> &expanded) {
 
 // =====================================================================================================================
 // Builds necessary variants of the shader inFile.  It must be either spir-v assembly or spir-v binary.
-Result BuildShaderVariants(ICompiler *pCompiler,      // [in] LLPC context
+Result buildShaderVariants(ICompiler *pCompiler,      // [in] LLPC context
                            const std::string &inFile) // Input filename
 {
   Result result = Result::Success;
@@ -1734,18 +1734,18 @@ int main(int argc, char *argv[]) {
     return onFailure();
 
   // Build relocatable shader cache. This requires all inputs to be .pipe files.
-  if (llvm::cl::BuildRelocatableShaderCache) {
+  if (llvm::cl::BuildShaderCache) {
     auto nonPipeIt =
         llvm::find_if_not(expandedInputFiles, [](const std::string &filename) { return isPipelineInfoFile(filename); });
     if (nonPipeIt != expandedInputFiles.end()) {
-      LLPC_ERRS(format("A non-pipeline file passed cannot be used to build relocatable shader cache: %s\n",
+      LLPC_ERRS(format("A non-pipeline file passed cannot be used to build shader cache: %s\n",
                        nonPipeIt->c_str()));
       result = Result::ErrorInvalidValue;
       return onFailure();
     }
 
     for (const std::string &file : expandedInputFiles) {
-      result = BuildShaderVariants(compiler, file);
+      result = buildShaderVariants(compiler, file);
       if (isFailure())
         return onFailure();
     }
