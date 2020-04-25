@@ -63,6 +63,10 @@
 #define Vkgc Llpc
 #endif
 
+#ifndef LLPC_ENABLE_SHADER_CACHE
+#define LLPC_ENABLE_SHADER_CACHE 0
+#endif
+
 //**
 //**********************************************************************************************************************
 //* @page VersionHistory
@@ -573,8 +577,8 @@ struct GraphicsPipelineBuildInfo {
   void *pInstance;                ///< Vulkan instance object
   void *pUserData;                ///< User data
   OutputAllocFunc pfnOutputAlloc; ///< Output buffer allocator
-#if LLPC_CLIENT_INTERFACE_MAJOR_VERSION < 38
-  IShaderCache *pShaderCache; ///< Shader cache, used to search for the compiled shader data
+#if LLPC_CLIENT_INTERFACE_MAJOR_VERSION < 38 || LLPC_ENABLE_SHADER_CACHE
+  IShaderCache *shaderCache; ///< Shader cache, used to search for the compiled shader data
 #endif
   PipelineShaderInfo vs;  ///< Vertex shader
   PipelineShaderInfo tcs; ///< Tessellation control shader
@@ -632,8 +636,8 @@ struct ComputePipelineBuildInfo {
   void *pInstance;                ///< Vulkan instance object
   void *pUserData;                ///< User data
   OutputAllocFunc pfnOutputAlloc; ///< Output buffer allocator
-#if LLPC_CLIENT_INTERFACE_MAJOR_VERSION < 38
-  IShaderCache *pShaderCache; ///< Shader cache, used to search for the compiled shader data
+#if LLPC_CLIENT_INTERFACE_MAJOR_VERSION < 38 || LLPC_ENABLE_SHADER_CACHE
+  IShaderCache *shaderCache; ///< Shader cache, used to search for the compiled shader data
 #endif
   unsigned deviceIndex;    ///< Device index for device group
   PipelineShaderInfo cs;   ///< Compute shader
