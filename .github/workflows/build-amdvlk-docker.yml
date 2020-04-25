@@ -3,19 +3,21 @@ name: Build AMDVLK for LLPC
 on:
   schedule:
     - cron:  "0 */12 * * *"
+  push:
 
 jobs:
   build-and-push-amdvlk:
-    name: Branch ${{ matrix.branch }}, base image ${{ matrix.base-image }}, config ${{ matrix.config }}
-    if: github.repository == 'GPUOpen-Drivers/llpc'
+    name: Config ${{ matrix.config }}, variant ${{ matrix.variant }}
+    if: github.repository != 'GPUOpen-Drivers/llpc'
     runs-on: ${{ matrix.host-os }}
     strategy:
       matrix:
-        host-os:      ["ubuntu-latest"]
-        base-image:   ["gcr.io/stadia-open-source/amdvlk_dev_release:nightly"]
-        branch:       [dev]
-        config:       [Release]
-        generator:    [Ninja]
+        host-os:        ["ubuntu-18.04"]
+        image-template: ["gcr.io/stadia-open-source/amdvlk_%s_%s:nightly"]
+        branch:         [dev]
+        config:         [Release]
+        variant:        [Default, ShaderCache]
+        generator:      [Ninja]
     steps:
       - name: Checkout LLPC
         run: |
@@ -30,12 +32,21 @@ jobs:
       - name: Setup Docker to use the GCR
         run: |
           gcloud auth configure-docker
+      - name: Generate Docker image tag string
+        run: |
+          CONFIG_LOWER=$(echo "${{ matrix.config }}" | tr "[:upper:]" "[:lower:]")
+          VARIANT_LOWER=$(echo "${{ matrix.variant }}" | tr "[:upper:]" "[:lower:]")
+          TAG=$(printf "${{ matrix.image-template }}" "$CONFIG_LOWER" "$VARIANT_LOWER")
+          echo "::set-env name=IMAGE_TAG::$TAG"
       - name: Build and Test AMDVLK with Docker
-        run: docker build . --file docker/amdvlk.Dockerfile
-                            --build-arg BRANCH="${{ matrix.branch }}"
-                            --build-arg CONFIG="${{ matrix.config }}"
-                            --build-arg GENERATOR="${{ matrix.generator }}"
-                            --tag ${{ matrix.base-image }}
+        run: |
+          echo "IMAGE_TAG: $IMAGE_TAG"
+          docker build . --file docker/amdvlk.Dockerfile \
+                         --build-arg BRANCH="${{ matrix.branch }}" \
+                         --build-arg CONFIG="${{ matrix.config }}" \
+                         --build-arg VARIANT="${{ matrix.variant }}" \
+                         --build-arg GENERATOR="${{ matrix.generator }}" \
+                         --tag "$IMAGE_TAG"
       - name: Push the new image
         run: |
-          docker push ${{ matrix.base-image }}
+          exit 1 && docker push "$IMAGE_TAG"

@@ -18,6 +18,7 @@ FROM ubuntu:18.04
 
 ARG BRANCH
 ARG CONFIG
+ARG VARIANT
 ARG GENERATOR
 
 # Install required packages.
@@ -40,10 +41,18 @@ RUN repo init -u https://github.com/GPUOpen-Drivers/AMDVLK.git -b "$BRANCH" \
 
 # Build LLPC.
 WORKDIR /vulkandriver/builds/ci-build
-RUN cmake "/vulkandriver/drivers/xgl" \
+RUN  EXTRA_FLAGS="" \
+     && if [ "$VARIANT" = "Default" ] ; then \
+          EXTRA_FLAGS=""; \
+        elif [ "$VARIANT" == "ShaderCache" ] ; then \
+          EXTRA_FLAGS="-DLLPC_ENABLE_SHADER_CACHE=ON"; \
+        fi \
+    && echo "Extra CMake flags: $EXTRA_FLAGS" \
+    && cmake "/vulkandriver/drivers/xgl" \
           -G "$GENERATOR" \
           -DXGL_BUILD_LIT=ON \
           -DCMAKE_BUILD_TYPE="$CONFIG" \
+          $EXTRA_FLAGS \
     && cmake --build . \
     && cmake --build . --target amdllpc \
     && cmake --build . --target spvgen \
