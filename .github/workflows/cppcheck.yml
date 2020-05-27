@@ -1,20 +1,23 @@
-name: LLPC Docker CI
+name: Static code check
 
 on:
+  pull_request:
 
 jobs:
-  build-and-test:
-    name: "Features: ${{ matrix.feature-set }}, assertions: ${{ matrix.assertions }}"
-    runs-on: ${{ matrix.host-os }}
+  cppcheck:
+    name: cppcheck
+    runs-on: "ubuntu-18.04"
     strategy:
-      fail-fast: false
       matrix:
-        host-os:             ["ubuntu-18.04"]
         base-image-template: ["gcr.io/stadia-open-source/amdvlk_%s%s_%s:nightly"]
         config:              [Release]
-        assertions:          ["OFF", "ON"]
-        feature-set:         ["+gcc", "+clang", "+clang+shadercache"]
+        assertions:          ["OFF"]
+        feature-set:         ["+clang"]
     steps:
+      - name: Setup environment
+        run: |
+          sudo apt-get install -yqq snapd
+          sudo snap install cppcheck
       - name: Checkout LLPC
         run: |
           git clone https://github.com/${GITHUB_REPOSITORY}.git .
@@ -30,10 +33,17 @@ jobs:
           echo "::set-env name=IMAGE_TAG::$TAG"
       - name: Fetch the latest prebuilt AMDVLK
         run: docker pull "$IMAGE_TAG"
-      - name: Build and Test with Docker
-        run: docker build . --file docker/llpc.Dockerfile
+      - name: Fetch sources and regenerate compilation database with Docker
+        run: docker build . --file docker/cppcheck.Dockerfile
                             --build-arg AMDVLK_IMAGE="$IMAGE_TAG"
                             --build-arg LLPC_REPO_NAME="${GITHUB_REPOSITORY}"
                             --build-arg LLPC_REPO_REF="${GITHUB_REF}"
                             --build-arg LLPC_REPO_SHA="${GITHUB_SHA}"
-                            --tag llpc/ci-shaderdb
+                            --tag amdvlk-cppcheck
+      - name: Extract sources from the docker image
+        run: |
+            sudo mkdir -p /vulkandriver
+            docker run -v /vulkandriver:/host -i amdvlk-cppcheck /bin/sh -c "cp -r /vulkandriver/* /host/"
+            ls /vulkandriver
+      - name: Run cppcheck
+        run: cppcheck -q -j$(( $(nproc) * 4 )) --error-exitcode=1 --project=/vulkandriver/compile_commands.json
