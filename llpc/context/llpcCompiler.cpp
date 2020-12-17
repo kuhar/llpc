@@ -55,6 +55,8 @@
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Object/ELF.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -62,6 +64,7 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
+
 #include <mutex>
 #include <set>
 #include <unordered_set>
@@ -862,6 +865,16 @@ Result Compiler::buildPipelineWithRelocatableElf(Context *context, ArrayRef<cons
 
     // Add the result to the cache.
     if (result == Result::Success) {
+      // TODO: add option check
+      // if (add-cache-hash-to-elf) {
+      MetroHash::Hash cacheId = {};
+      MetroHash128 hash128 = {};
+      hash128.Update(hashId);
+      hash128.Finalize(cacheId.bytes);
+      createHashSectionInShaderElf(&elf[stage],
+                                   getShaderStageName(static_cast<ShaderStage>(stage)),
+                                   cacheId);
+      // }
       elfBin.codeSize = elf[stage].size();
       elfBin.pCode = elf[stage].data();
     }
@@ -1990,6 +2003,107 @@ void Compiler::updateShaderCache(bool insert, const BinaryData *elfBin, ShaderCa
     shaderCache->insertShader(hEntry, elfBin->pCode, elfBin->codeSize);
   } else
     shaderCache->resetShader(hEntry);
+}
+
+void Compiler::createHashSectionInShaderElf(ElfPackage *elf,
+                                            const char* stageName,
+                                            const MetroHash::Hash& cacheHash) {
+  // Add a new .note section for cache hash and a section header for it.
+  //
+  // |-------------|        |-------------|
+  // | ELF header  |        | ELF header  |
+  // |-------------|        |-------------|
+  // | Sections    |        | Sections    |
+  // | ...         |        | ...         |
+  // |-------------|  ==>   |-------------|
+  // | Section     |        | Section     |
+  // | headers     |        | headers     |
+  // | ...         |        | ...         |
+  // |-------------|        |-------------|
+  // | Sections    |        | New section |
+  // | ...         |---|    | header for  |
+  // |-------------|   |    | hash note   |    This new section header's
+  //                   |    | section    +|--| offset must be the new
+  //    Remaining      |    |-------------|  | note section for cache hash
+  //    sections after |    | New note    |  |
+  //    section header |    | section for |<-/
+  //    table must be  |    | cache hash  |
+  //    shifted        |    |-------------|
+  //                   \--->| Sections    |
+  //                        | ...         |
+  //                        |-------------|
+  typedef object::Elf_Nhdr_Impl<object::ELF64LE> NoteHeader;
+
+  ELF::Elf64_Ehdr ehdr = {};
+  memcpy(&ehdr, elf->data(), sizeof(ELF::Elf64_Ehdr));
+
+  assert(sizeof(ELF::Elf64_Shdr) == ehdr.e_shentsize);
+  ELF::Elf64_Shdr hash_note_shdr = {};
+  hash_note_shdr.sh_offset = ehdr.e_shoff + (ehdr.e_shnum + 1) * sizeof(ELF::Elf64_Shdr);
+
+  // Write the note header.
+  std::string noteName = CacheHashNoteName;
+  NoteHeader noteHeader;
+  noteHeader.n_namesz = noteName.size() + 1;
+  noteHeader.n_descsz = sizeof(cacheHash.bytes);
+  // TODO: Define a note type to specify cache hash. It must be defined in
+  // llvm/include/llvm/BinaryFormat/ELF.h.
+  // Note types with values between 0 and 32 (inclusive) are reserved.
+  noteHeader.n_type = 0;
+
+  // Append zeros for note header alignment
+  std::string notes;
+  const unsigned int hash_note_align = NoteHeader::Align - (hash_note_shdr.sh_offset & NoteHeader::Align - 1);
+  notes.append(hash_note_align, '\0');
+  hash_note_shdr.sh_offset += static_cast<ELF::Elf64_Off>(notes.size());
+
+  notes.append(reinterpret_cast<const char *>(&noteHeader), sizeof(noteHeader));
+  // Write the note name, followed by 1-4 zero bytes to terminate and align.
+  notes += noteName;
+  notes.append(NoteHeader::Align - (notes.size() & NoteHeader::Align - 1), '\0');
+  // Write the Hash, followed by 0-3 zero bytes to align.
+  notes.append(reinterpret_cast<const char *>(cacheHash.bytes), sizeof(cacheHash.bytes));
+  notes.append(-notes.size() & NoteHeader::Align - 1, '\0');
+  hash_note_shdr.sh_size = static_cast<ELF::Elf64_Xword>(notes.size() - hash_note_align);
+
+  char *ptr = reinterpret_cast<char *>(elf->data());
+  ptr += ehdr.e_shoff;
+  ELF::Elf64_Word note_sh_name = 0;
+  const ELF::Elf64_Off offset_shift = static_cast<ELF::Elf64_Off>(notes.size() + sizeof(ELF::Elf64_Shdr));
+  for (ELF::Elf64_Half i = 0; i < ehdr.e_shnum; i++) {
+    ELF::Elf64_Shdr *shdr = reinterpret_cast<ELF::Elf64_Shdr *>(ptr);
+    if (shdr->sh_type == ELF::SHT_NOTE)
+      note_sh_name = shdr->sh_name;
+    // Section after the section header table. We have to update its offset
+    // information.
+    if (shdr->sh_offset > ehdr.e_shoff)
+      shdr->sh_offset += offset_shift;
+    ptr += sizeof(ELF::Elf64_Shdr);
+  }
+
+  hash_note_shdr.sh_type = ELF::SHT_NOTE;
+  hash_note_shdr.sh_addralign = 4U;
+  hash_note_shdr.sh_name = note_sh_name;
+
+  // Keep sections after the section header table
+  StringRef remaining_sections = elf->substr(ptr - reinterpret_cast<const char *>(elf->data()));
+
+  // Strip sections after the section header table.
+  elf->resize(ehdr.e_shoff + ehdr.e_shnum * sizeof(ELF::Elf64_Shdr));
+
+  // Update ELF header.
+  ehdr.e_shnum++;
+  memcpy(elf->data(), &ehdr, sizeof(ELF::Elf64_Ehdr));
+
+  // Add the section header for the new note section.
+  raw_svector_ostream elfStream(*elf);
+  elfStream << StringRef(reinterpret_cast<const char *>(&hash_note_shdr), sizeof(ELF::Elf64_Shdr));
+
+  // Add the new note section for the cache hash.
+  elfStream << notes;
+
+  // Add remaining sections after the section header table.
+  elfStream << remaining_sections;
 }
 
 // =====================================================================================================================

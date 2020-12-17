@@ -153,6 +153,10 @@ public:
 
   void updateShaderCache(bool insert, const BinaryData *elfBin, ShaderCache *shaderCache, CacheEntryHandle phEntry);
 
+  void createHashSectionInShaderElf(ElfPackage *elf,
+                                    const char* stageName,
+                                    const MetroHash::Hash& cacheHash);
+
   Vkgc::Result lookUpCaches(Vkgc::ICache *appPipelineCache, Vkgc::HashId *cacheHash, BinaryData *elfBin,
                             Vkgc::EntryHandle *entryHandle);
 

@@ -164,6 +164,8 @@ struct NoteHeader {
 static_assert(sizeof(Util::Abi::AmdGpuVendorName) < 8, "");
 static_assert(sizeof(Util::Abi::AmdGpuArchName) < 8, "");
 
+static constexpr char CacheHashNoteName[] = "llpc_cache_hash"; // Cache hash note name for .note record.
+
 #pragma pack(push, 1)
 // Represents the layout of 32-bit ELF
 struct Elf32 {
