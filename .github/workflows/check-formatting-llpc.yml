@@ -1,7 +1,6 @@
 name: Code formatting check
 
 on:
-  pull_request:
 
 jobs:
   clang-format-check:
